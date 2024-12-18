@@ -24,3 +24,5 @@
  conda install -c conda-forge py3dep
  
  conda install ipykernel tqdm tomli  (ipykernel so that jupyter notebook will recognize the environment as a kernel)
+
+ conda install xvec -c conda-forge
