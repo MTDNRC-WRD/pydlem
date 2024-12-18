@@ -1,7 +1,7 @@
 from pathlib import Path
 import tomli
 
-path = Path('./config') / 'pydlem_settings.toml'
+path = Path(__file__).parent / 'pydlem_settings.toml'
 with path.open(mode='rb') as f:
     settings = tomli.load(f)
 
