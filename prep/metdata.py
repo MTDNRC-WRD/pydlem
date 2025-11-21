@@ -7,11 +7,18 @@ import pandas as pd
 import geopandas as gpd
 import xarray as xr
 import numpy as np
-from shapely.geometry import Point
-
 from prep.utils import get_gridmet_cells
-
 from config import GRIDMET_PARAMS
+
+import xvec
+import exactextract
+import shapely
+
+# For get_gridmet_at_polygons function
+import GRIDtools as gt
+from geocube.api.core import make_geocube
+from functools import partial
+from geocube.rasterize import rasterize_image
 
 # TODO - Default date did go to previous day...seems inconsistent with THREDDS,
 #   sometimes it creates a mismatch in the dates and variable series, NEED TO SEE
@@ -158,7 +165,7 @@ def get_gridmet_at_points(in_geom,
                                                                      'units': 'Kelvin'}),
             "max_temp": (['time', 'location'], pd.concat(tmmx, axis=1), {'standard_name': 'Maximum Temperature',
                                                                      'units': 'Kelvin'}),
-            "srad": (['time', 'location'], pd.concat(srad, axis=1), {'standard_name': 'Downward Surface Shortwave Radiation',
+            "solrad": (['time', 'location'], pd.concat(srad, axis=1), {'standard_name': 'Downward Surface Shortwave Radiation',
                                                                      'units': 'W/m^2'}),
             "wind_dir": (['time', 'location'], pd.concat(th, axis=1), {'standard_name': 'Wind Direction',
                                                                      'units': 'Degrees Clockwise from N'}),
@@ -189,6 +196,250 @@ def get_gridmet_at_points(in_geom,
     )
 
     return xds
+
+
+def get_gridmet_for_polygons(in_geom,
+                             gdf_index_col,
+                             start = DEFAULT_DATES[0],
+                             end = DEFAULT_DATES[1],
+                             crs = 4326) -> xr.Dataset:
+    """
+    :return: Function takes a list of GridMET data parameters, start date, end date, and a Geopandas GeoDataFrame of
+    polygon geometries and returns a discrete station formatted xarray dataset of average or area weighted GridMET data
+    to run mwb_flow for each polygon geometry. Uses xvec and exactextract functions.
+    :param in_geom: geopandas.GeoDataFrame - contains geometry
+    :param gdf_index_col: str - name of column in GeoDataFrame to use as a unique identifier for each geometry
+    :param start: str "%Y-%m-%d" - Starting date of data extraction period
+    :param end: str "%Y-%m-%d" = Ending date of data extraction period
+    :param crs: int or str - EPSG code for crs, default is 4326
+    :return: a xarray dataset for discrete locations (stations)
+    """
+
+    # Set CRS of polygons for GridMet and exactextract, respectively
+    in_geom = in_geom.to_crs(crs)
+    in_geom_repro = in_geom.to_crs(5071)
+
+    # Pull GridMet data into a xarray
+    gmet_list = []
+    for p in GRIDMET_PARAMS:
+        bnds = in_geom.total_bounds
+        gmet = GridMet(variable=p, start=start, end=end,
+                       bbox=BBox(bnds[0] - 0.5, bnds[2] + 0.5, bnds[3] + 0.5, bnds[1] - 0.5))
+        gmet = gmet.subset_nc(return_array=True)
+        gmet_input = gmet[list(gmet.data_vars)[0]]
+
+        # Change the CRS of xarray to 5071 for area calculations of zonal stats
+        gmet_input = gmet_input.rio.write_crs(input_crs=4326).to_dataset()
+        gmet_input = gmet_input.rio.reproject(5071)
+        gmet_input = gmet_input[list(gmet_input.data_vars)[0]]
+
+        # Calculate zonal stats according to parameters
+        if p == 'pr':
+            gmet_input = gmet_input / 1000  # convert from mm to meters
+            ds_sum = gmet_input.xvec.zonal_stats(geometry=in_geom_repro.geometry, x_coords="x", y_coords="y",
+                                                 stats="sum(coverage_weight=area_cartesian)", method="exactextract")
+            ds_sum.name = 'precipitation_amount'
+        else:
+            gmet_list.append(gmet_input)
+    ds = xr.merge(gmet_list)
+    ds = ds.xvec.zonal_stats(geometry=in_geom_repro.geometry, x_coords="x", y_coords="y",
+                             stats="mean(coverage_weight=none)", method="exactextract")
+
+    ds = xr.merge([ds, ds_sum])
+
+    # Add coords
+    loc_df = pd.DataFrame(in_geom[gdf_index_col]).set_index(in_geom.geometry)
+    loc_df = loc_df.reindex(in_geom.geometry.values)
+
+    lat_df = pd.DataFrame((in_geom.geometry.bounds['miny'] + in_geom.geometry.bounds['maxy']) / 2).set_index(
+        in_geom.geometry)
+    lat_df = lat_df.reindex(in_geom.geometry.values)
+
+    lon_df = pd.DataFrame((in_geom.geometry.bounds['minx'] + in_geom.geometry.bounds['maxx']) / 2).set_index(
+        in_geom.geometry)
+    lon_df = lon_df.reindex(in_geom.geometry.values)
+
+    area_df = pd.DataFrame(in_geom_repro.area / (1000 ** 2)).set_index(in_geom_repro.geometry) # convert to km^2
+    area_df = area_df.reindex(in_geom_repro.geometry.values)
+
+    coords = list(zip(pd.Series(lon_df[0].values), pd.Series(lat_df[0].values)))
+
+    if len(in_geom) == 1:
+        elev_df = pd.DataFrame([py3dep.elevation_bycoords(coords, crs=crs)]).set_index(in_geom.geometry)
+    else:
+        elev_df = pd.DataFrame(py3dep.elevation_bycoords(coords, crs=crs)).set_index(in_geom.geometry)
+
+    xds = xr.Dataset(
+        {
+            "max_temp": (['location', 'time'], ds['daily_maximum_temperature'].values,
+                         {'standard_name': 'Maximum Temperature',
+                          'units': 'Kelvin'}),
+            "min_temp": (['location', 'time'], ds['daily_minimum_temperature'].values,
+                         {'standard_name': 'Maximum Temperature',
+                          'units': 'Kelvin'}),
+            "precip_volume": (['location', 'time'], ds['precipitation_amount'].values,
+                              {'standard_name': 'Precipitation Volume',
+                               'units': 'm^3'}),
+            "solrad": (['location', 'time'], ds["daily_mean_shortwave_radiation_at_surface"].values,
+                       {'standard_name': 'Downward Surface Shortwave Radiation',
+                        'units': 'W/m^2'}),
+            "wind_dir": (['location', 'time'], ds["daily_mean_wind_direction"].values,
+                         {'standard_name': 'Wind Direction',
+                          'units': 'Degrees Clockwise from N'}),
+            "wind_vel": (['location', 'time'], ds["daily_mean_wind_speed"].values,
+                         {'standard_name': 'Wind Speed',
+                          'units': 'm/s'}),
+            "vpd": (['location', 'time'], ds["daily_mean_vapor_pressure_deficit"].values,
+                    {'standard_name': 'Vapor Pressure Deficit',
+                     'units': 'kPa'})
+        },
+        coords={
+            "lat": (['location'], list(lat_df.iloc[:, 0]), {'standard_name': 'latitude',
+                                                            'long_name': 'location_latitude',
+                                                            'units': 'degrees',
+                                                            'crs': '4326'}),
+            "lon": (['location'], list(lon_df.iloc[:, 0]), {'standard_name': 'longitude',
+                                                            'long_name': 'location_longitude',
+                                                            'units': 'degrees',
+                                                            'crs': '4326'}),
+            "elev": (['location'], list(elev_df.iloc[:, 0]), {'standard_name': 'elevation',
+                                                              'long_name': 'location_elevation',
+                                                              'units': 'meters'}),
+            "area": (['location'], list(area_df.iloc[:, 0]), {'standard_name': 'area',
+                                                              'long_name': 'input_shape_area',
+                                                              'units': 'km^2'}),
+            "location": (['location'], list(loc_df.iloc[:, 0]), {'long_name': 'location_identifier',
+                                                                 'cf_role': 'timeseries_id'}),
+            "time": ds['time'].values
+        },
+        attrs={
+            "featureType": 'timeSeries',
+        }
+    )
+    xds = xds.transpose('time', 'location')
+
+    return xds
+
+
+# archived function - uses geocube package
+# def get_gridmet_for_polygons(in_geom,
+#                           gdf_index_col=None,
+#                           start = DEFAULT_DATES[0],
+#                           end = DEFAULT_DATES[1],
+#                           crs = 4326) -> xr.Dataset:
+#     """
+#     :return: Function takes a list of GridMET data parameters, start date, end date, and a Geopandas GeoDataFrame of
+#     polygon geometries and returns a discrete station formatted xarray dataset of mean or area weighted necessary
+#     GridMET data to run pydlem for each polygon geometry. Uses geocube package functions
+#     :param in_geom: geopandas.GeoDataFrame - contains geometry
+#     :param gdf_index_col: str - name of column in GeoDataFrame to use as a unique identifier for each geometry
+#     :param start: str "%Y-%m-%d" - Starting date of data extraction period
+#     :param end: str "%Y-%m-%d" = Ending date of data extraction period
+#     :param crs: int or str - EPSG code for crs, default is 4326
+#     :return: a xarray dataset for discrete locations (stations)
+#     """
+#
+#     in_geom = in_geom.astype({gdf_index_col: int})
+#     all_polys = in_geom[gdf_index_col].tolist()
+#
+#     var_list = []
+#     for p in tqdm(GRIDMET_PARAMS, desc='Parameters'):
+#         bnds = in_geom.total_bounds
+#         gmet = GridMet(variable=p, start=start, end=end,
+#                        bbox=BBox(bnds[0] - 0.5, bnds[2] + 0.5, bnds[3] + 0.5, bnds[1] - 0.5))
+#         gmet = gmet.subset_nc(return_array=True)
+#         gmet_input = gmet[list(gmet.data_vars)[0]]
+#         gmet_input = gmet_input.rio.write_crs(4326)
+#
+#         if p == 'pr':
+#             gmet_input.values = gmet_input.values / 1000  # convert from mm to meters
+#             vol_xds = gt.grid_area_weighted_volume(gmet_input, in_geom, gdf_index_col)
+#
+#         else:
+#             in_polys = in_geom
+#             poly_list = []
+#             while all_polys != poly_list:
+#                 gmet_clipped = gmet_input.rio.write_crs(input_crs=crs).rio.clip(in_polys.geometry.values, in_polys.crs,
+#                                                                                 all_touched=True)
+#                 gmet_clipped.name = p
+#
+#                 grid_out = make_geocube(vector_data=in_polys, measurements=[gdf_index_col], like=gmet_clipped,
+#                                         rasterize_function=partial(rasterize_image, all_touched=True)).set_coords(
+#                     gdf_index_col)
+#
+#                 # make geodataframe to use for rerunning remaining polygons
+#                 batch = np.unique(
+#                     grid_out.coords[gdf_index_col].values[~np.isnan(grid_out.coords[gdf_index_col].values)]).tolist()
+#                 poly_list.extend(batch)
+#                 poly_list = sorted(list(map(int, poly_list)), key=all_polys.index)
+#                 in_polys = in_geom[in_geom[gdf_index_col].isin(list(set(all_polys) - set(poly_list)))]
+#
+#                 for date in range(0, len(gmet_input.time.values)):
+#                     gmet_ts = gmet_clipped[date, :, :]
+#                     grid_ts = grid_out
+#
+#                     grid_ts[p] = (grid_out.dims, gmet_ts.values, gmet_ts.attrs, gmet_ts.encoding)
+#                     grid_ts = grid_out.drop("spatial_ref").groupby(grid_out[gdf_index_col]).mean()
+#                     xda = grid_ts[p]
+#                     xda = xda.expand_dims({"time": 1}).assign_coords(time=('time', [gmet_ts.time.values]))
+#                     var_list.append(xda)
+#
+#         xds = xr.merge(var_list)
+#
+#     lat_df = pd.DataFrame((in_geom.geometry.bounds['miny'] + in_geom.geometry.bounds['maxy']) / 2).set_index(
+#         in_geom[gdf_index_col])
+#     lat_df = lat_df.reindex(list(xds[gdf_index_col].values.astype(int)))
+#
+#     lon_df = pd.DataFrame((in_geom.geometry.bounds['minx'] + in_geom.geometry.bounds['maxx']) / 2).set_index(
+#         in_geom[gdf_index_col])
+#     lon_df = lon_df.reindex(list(xds[gdf_index_col].values.astype(int)))
+#
+#     coords = list(zip(pd.Series(lon_df[0].values), pd.Series(lat_df[0].values)))
+#     elev_df = pd.DataFrame([py3dep.elevation_bycoords(coords, crs=crs)]).set_index(in_geom[gdf_index_col])
+#     elev_df = elev_df.reindex(list(xds[gdf_index_col].values.astype(int)))
+#
+#     xds = xr.Dataset(
+#         {
+#             "max_temp": (['time', 'location'], xds["tmmx"].values, {'standard_name': 'Maximum Temperature',
+#                                                                     'units': 'Kelvin'}),
+#             "min_temp": (['time', 'location'], xds["tmmn"].values, {'standard_name': 'Maximum Temperature',
+#                                                                     'units': 'Kelvin'}),
+#             "solrad": (['time', 'location'], xds["srad"].values,
+#                        {'standard_name': 'Downward Surface Shortwave Radiation',
+#                         'units': 'W/m^2'}),
+#             "wind_dir": (['time', 'location'], xds["th"].values, {'standard_name': 'Wind Direction',
+#                                                                   'units': 'Degrees Clockwise from N'}),
+#             "wind_vel": (['time', 'location'], xds["vs"].values, {'standard_name': 'Wind Speed',
+#                                                                   'units': 'm/s'}),
+#             "vpd": (['time', 'location'], xds["vpd"].values, {'standard_name': 'Vapor Pressure Deficit',
+#                                                               'units': 'kPa'})
+#         },
+#         coords={
+#             # Keep the order of xds
+#             "time": xds['time'].values,
+#
+#             "location": (['location'], xds[gdf_index_col].values.astype(int), {'long_name': 'location_identifier',
+#                                                                                'cf_role': 'timeseries_id'}),
+#             "lat": (['location'], list(lat_df.iloc[:, 0]), {'standard_name': 'latitude',
+#                                                             'long_name': 'location_latitude',
+#                                                             'units': 'degrees',
+#                                                             'crs': '4326'}),
+#             "lon": (['location'], list(lon_df.iloc[:, 0]), {'standard_name': 'longitude',
+#                                                             'long_name': 'location_longitude',
+#                                                             'units': 'degrees',
+#                                                             'crs': '4326'}),
+#             "elev": (['location'], list(elev_df.iloc[:, 0]), {'standard_name': 'elevation',
+#                                                                'long_name': 'location_elevation',
+#                                                                'units': 'meters'})
+#         },
+#         attrs={
+#             "featureType": 'timeSeries',
+#         }
+#     )
+#
+#     output = xr.merge([xds, vol_xds])
+#
+#     return output
 
 
 def calculate_vpd(Tmin,
@@ -233,4 +484,3 @@ def calculate_vpd(Tmin,
 
     return vpd
 
-#def append_fetch_width_variable(met_dataset, wind_dir_name, )

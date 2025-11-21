@@ -8,7 +8,7 @@ import geopandas as gpd
 def area_from_eac_curve(indata, curve, in_type='storage'):
     """
     Takes input reservoir data as storage or elevation and converts to surface area
-    using a elevation-area-capacity curve.
+    using an elevation-area-capacity curve.
     :param indata: pd.Series - Input data (either elevation or storage)
     :param curve: pd.DataFrame - Table with 3 columns in the order [elevation, area, storage]
     :param in_type: str - value either 'storage' or 'elevation' to specify what the input data are,

@@ -27,5 +27,5 @@ GRIDMET_XRES = 0.041666666666666664
 GRIDMET_YRES = 0.04166666666666668
 
 [DLEM]
-INPUT_VARS = ['precip', 'mean_temp', 'srad', 'vpd', 'wind_vel', 'LakeArea', 'LakeDepth', 'ftch_len']
+INPUT_VARS = ['precip', 'solrad', 'lrad', 'vpd', 'wind_vel', 'LakeArea', 'LakeDepth', 'ftch_len']
 DSET_COORDS = ['location', 'lat', 'lon', 'elev', 'time']

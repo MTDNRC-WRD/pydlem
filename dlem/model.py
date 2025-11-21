@@ -5,7 +5,6 @@ import numpy as np
 from scipy.interpolate import RegularGridInterpolator
 from tqdm import tqdm
 
-
 from dlem.functions import latent_heat_vaporization, psychrometric_const, altitude_adjusted_atmp
 from dlem.functions import calc_slope_swv_curve, cloud_factor
 
@@ -48,7 +47,7 @@ class CreateModel:
 
         # Check Inputs and Formatting
         # check for long-wave radiation input
-        if 'lrad' in list(dataset.keys()):
+        if "lrad" in list(dataset.keys()):
             lrad = True
         else:
             lrad = False
@@ -69,47 +68,56 @@ class CreateModel:
         if np.count_nonzero(ta_nan) > 0:
             warnings.warn(
                 "There are missing TEMPERATURE values for the run time period, missing"
-                " values will be propogated to the model outputs.")
+                " values will be propogated to the model outputs."
+            )
         depth_nan = np.isnan(depth)
         if np.count_nonzero(depth_nan) > 0:
             warnings.warn(
                 "There are missing LAKE DEPTH values for the run time period, missing "
-                "values will be propogated to the model outputs.")
+                "values will be propagated to the model outputs."
+            )
         area_nan = np.isnan(area)
         if np.count_nonzero(area_nan) > 0:
             warnings.warn(
                 "There are missing LAKE AREA values for the run time period, missing "
-                "values will be propogated to the model outputs.")
+                "values will be propagated to the model outputs."
+            )
         fch_nan = np.isnan(fch)
         if np.count_nonzero(fch_nan) > 0:
             warnings.warn(
                 "There are missing FETCH values for the run time period, missing "
-                "values will be propogated to the model outputs.")
+                "values will be propagated to the model outputs."
+            )
         ut_nan = np.isnan(ut)
         if np.count_nonzero(ut_nan) > 0:
             warnings.warn(
                 "There are missing WIND SPEED values for the run time period, missing "
-                "values will be propogated to the model outputs.")
+                "values will be propagated to the model outputs."
+            )
         vpd_nan = np.isnan(vpd)
         if np.count_nonzero(vpd_nan) > 0:
             warnings.warn(
                 "There are missing VAPOR PRESSURE DEFICIT values for the run time period, missing "
-                "values will be propogated to the model outputs.")
+                "values will be propagated to the model outputs."
+            )
         srad_nan = np.isnan(srad)
         if np.count_nonzero(srad_nan) > 0:
             warnings.warn(
                 "There are missing SHORTWAVE RADIATION values for the run time period, missing "
-                "values will be propogated to the model outputs.")
+                "values will be propagated to the model outputs."
+            )
         lat_nan = np.isnan(lat)
         if np.count_nonzero(lat_nan) > 0:
             warnings.warn(
                 "There are missing LATITUDE values for some locations, this will result in "
-                "no value outputs for locations missing latitude.")
+                "no value outputs for locations missing latitude."
+            )
         elev_nan = np.isnan(elev)
         if np.count_nonzero(elev_nan) > 0:
             warnings.warn(
                 "There are missing ELEVATION values for some locations, this will result in "
-                "no value outputs for locations missing elevation.")
+                "no value outputs for locations missing elevation."
+            )
 
         ierr = np.zeros((ta.shape))
         ierr = np.where(depth <= 0, 2, ierr)
@@ -134,10 +142,12 @@ class CreateModel:
         ierr = np.where(es <= vpd, 6, ierr)
         vpd = xr.where(es <= vpd, es * 0.99, vpd)
         ea = es - vpd
-
+        # p=100=pressure of station
+        atmp = altitude_adjusted_atmp(ta, ta.elev.values[None, :])
         t_d = (116.9 + 237.3 * np.log(ea)) / (16.78 - np.log(ea))
-        twb = (0.00066 * 100. * ta + 4098. * (ea) / np.power(t_d + 237.3, 2) * t_d) \
-              / (0.00066 * 100. + 4098. * (ea) / np.power(t_d + 237.3, 2.))
+        twb = (0.00066 * atmp * ta + 4098.0 * (ea) / np.power(t_d + 237.3, 2) * t_d) / (
+            0.00066 * atmp + 4098.0 * (ea) / np.power(t_d + 237.3, 2.0)
+        )
         ierr = np.where(twb > ta, 7, ierr)
         twb = xr.where(twb > ta, ta, twb)
 
@@ -149,7 +159,7 @@ class CreateModel:
 
         # some variables
         alambda = latent_heat_vaporization(ta)
-        atmp = altitude_adjusted_atmp(ta, ta.elev.values[None, :])
+        # atmp = altitude_adjusted_atmp(ta, ta.elev.values[None, :])
         gamma = psychrometric_const(atmp, alambda)
         # airds = airdens(ta, elev)
 
@@ -157,36 +167,42 @@ class CreateModel:
         deltaa = calc_slope_swv_curve(ta)
         deltawb = calc_slope_swv_curve(twb)
 
-        # Emissvity of air and water (unitless)
+        # Emissivity of air and water (unitless)
         sradj = srad * 0.0864  # convert from W m-2 to MJ m-2 d-1
 
         fcd = cloud_factor(sradj, lat, elev)
-        em_a = 1.08 * (1.0 - np.exp(-np.power(ea * 10.0, (ta + absolute_zero['value']) / 2016.0))) * (
-                    1 + 0.22 * np.power(fcd, 2.75))
-        em_w = emissivity_water['value']
+        em_a = (
+            1.08
+            * (1.0 - np.exp(-np.power(ea * 10.0, (ta + absolute_zero["value"]) / 2016.0)))
+            * (1 + 0.22 * np.power(fcd, 2.75))
+        )
+        em_w = emissivity_water["value"]
 
         # lradj = em_a * sigma * pow((ta + T_abs), 4.) if lrad == -9999 else lrad * 0.0864
         if lrad:
             lradj = lrad * 0.0864  # convert from W m-2 to MJ m-2 d-1
         else:
-            lradj = em_a * stefan_boltzman['value'] * np.power((ta + absolute_zero['value']), 4.0)
+            lradj = em_a * stefan_boltzman["value"] * np.power((ta + absolute_zero["value"]), 4.0)
 
         # wind function using the method of McJannet, 2012 (MJ m-2 d-1 kPa-1)
         windf = (2.33 + 1.65 * ut) * np.power(fch, -0.1) * alambda
 
         # calculate equilibrium temperature of the water body (C) Zhao and Gao */
-        te = ((0.46 * em_a + windf * (deltaa + gamma)) * ta + (1.0 - water_albedo['value']) * sradj - 28.38 * (
-                    em_w - em_a) - windf * vpd) \
-             / (0.46 * em_w + windf * (deltaa + gamma))
+        te = (
+            (0.46 * em_a + windf * (deltaa + gamma)) * ta
+            + (1.0 - water_albedo["value"]) * sradj
+            - 28.38 * (em_w - em_a)
+            - windf * vpd
+        ) / (0.46 * em_w + windf * (deltaa + gamma))
 
         ###############################################################################################
         ############################## Calculate water column temperature #############################
         ###############################################################################################
 
         # time constant (d)
-        tau = (water_density['value'] * specificheat_water['value'] * depth) / (
-                    4.0 * stefan_boltzman['value'] * np.power((twb + absolute_zero['value']), 3.0) + windf * (
-                        deltawb + gamma))
+        tau = (water_density["value"] * specificheat_water["value"] * depth) / (
+            4.0 * stefan_boltzman["value"] * np.power((twb + absolute_zero["value"]), 3.0) + windf * (deltawb + gamma)
+        )
 
         # water column temperature (deg. C)
         # get initial tw0 if no missing values
@@ -200,19 +216,24 @@ class CreateModel:
             tw0_tmstmp = [tw0]
             htstrg = []
             for row in range(te.values.shape[0]):
-                tw = te.values[row] + (tw0_tmstmp[row] - te.values[row]) * np.exp(
-                    -timestep['value'] / tau.values[row])
+                tw = te.values[row] + (tw0_tmstmp[row] - te.values[row]) * np.exp(-timestep["value"] / tau.values[row])
                 tw[tw < 0] = 0
                 tw0_tmstmp.append(tw)
-                heat_stg = water_density['value'] * specificheat_water['value'] * depth.values[row] * (
-                            tw - tw0_tmstmp[row]) / timestep['value']
+                heat_stg = (
+                    water_density["value"]
+                    * specificheat_water["value"]
+                    * depth.values[row]
+                    * (tw - tw0_tmstmp[row])
+                    / timestep["value"]
+                )
                 htstrg.append(heat_stg)
             heat_stg = np.stack(htstrg, axis=0)
         # get initial tw0 if missing values
         else:
             warnings.warn(
                 "Missing values detected, this may lead to unequal length columns. "
-                "Heat Storage calculation will use a slower method.")
+                "Heat Storage calculation will use a slower method."
+            )
             interp_te = []
             interp_tau = []
             for c in range(te.values.shape[1]):
@@ -237,11 +258,16 @@ class CreateModel:
             tw0_tmstmp = [tw0]
             htstrg = []
             for row in range(te_intrp.shape[0]):
-                tw = te_intrp[row] + (tw0_tmstmp[row] - te_intrp[row]) * np.exp(-timestep['value'] / tau_intrp[row])
+                tw = te_intrp[row] + (tw0_tmstmp[row] - te_intrp[row]) * np.exp(-timestep["value"] / tau_intrp[row])
                 tw[tw < 0] = 0
                 tw0_tmstmp.append(tw)
-                heat_stg = water_density['value'] * specificheat_water['value'] * depth.values[row] * (
-                            tw - tw0_tmstmp[row]) / timestep['value']
+                heat_stg = (
+                    water_density["value"]
+                    * specificheat_water["value"]
+                    * depth.values[row]
+                    * (tw - tw0_tmstmp[row])
+                    / timestep["value"]
+                )
                 htstrg.append(heat_stg)
             heat_stg = np.stack(htstrg, axis=0)
 
@@ -250,13 +276,16 @@ class CreateModel:
         ################################################################################################
 
         # calculate the Penman evaporation
-        rn = sradj * (1. - water_albedo['value']) + lradj - em_w * (
-                    stefan_boltzman['value'] * np.power((ta + absolute_zero['value']), 4.))
+        rn = (
+            sradj * (1.0 - water_albedo["value"])
+            + lradj
+            - em_w * (stefan_boltzman["value"] * np.power((ta + absolute_zero["value"]), 4.0))
+        )
 
         le = (deltaa * (rn - heat_stg) + gamma * windf * vpd) / (deltaa + gamma)
         evap_hs = le / alambda
         evap_hs = xr.where(evap_hs < 0, 0, evap_hs)
-        evap_hs = evap_hs.to_dataset(name='evap')
+        evap_hs = evap_hs.to_dataset(name="evap")
 
         ################################################################################################
         ################################### Ice Phenology ##############################################
@@ -266,11 +295,11 @@ class CreateModel:
             print("Estimating ice cover...")
             iceds = simulate_ice(ta, depth)
             evap_hs = xr.where(iceds.ice == 1, 0, evap_hs)
-            evap_hs.evap.attrs = {'standard_name': 'Evaporation Rate', 'units': 'mm/day'}
+            evap_hs.evap.attrs = {"standard_name": "Evaporation Rate", "units": "mm/day"}
             evap_hs = xr.merge([evap_hs, iceds])
             self.outputs = evap_hs
         else:
-            evap_hs.evap.attrs = {'standard_name': 'Evaporation Rate', 'units': 'mm/day'}
+            evap_hs.evap.attrs = {"standard_name": "Evaporation Rate", "units": "mm/day"}
             self.outputs = evap_hs
 
     def save_outputs(self, filepath):
@@ -298,7 +327,7 @@ def simulate_ice(airtemp, depth):
     # get indexes of temp reversal
     revsi, revsj = np.nonzero(schng)
     # calc seasonal depths for dealing with potential nans
-    dseas = depth.groupby("time.season").mean('time')
+    dseas = depth.groupby("time.season").mean("time")
 
     init_lst = []
     # Loop through temp reversals
@@ -313,7 +342,7 @@ def simulate_ice(airtemp, depth):
         if yj not in init_lst:
             init_t = airtemp.values[:xi, yj]
             if len(init_t) < 30:
-                init_mn_t = airtemp.values[:xi + 30, yj].mean()
+                init_mn_t = airtemp.values[: xi + 30, yj].mean()
             else:
                 init_mn_t = init_t.mean()
 
@@ -331,24 +360,24 @@ def simulate_ice(airtemp, depth):
             d = depth.loc[dt].values[yj]
             # check for nan
             if np.isnan(d):
-                d = dseas.loc[depth['time.season'].values[xi]].values[yj]
+                d = dseas.loc[depth["time.season"].values[xi]].values[yj]
             else:
                 pass
             # calculate freeze lag from Zhao et al. 2022 ice phenology equations
-            fzlg = int(5.815 * d ** 0.626)
+            fzlg = int(5.815 * d**0.626)
             # calculate mean temperature over the freeze lag period
-            fz_mn_t = airtemp.values[xi:xi + fzlg, yj]
+            fz_mn_t = airtemp.values[xi : xi + fzlg, yj]
             if fz_mn_t.size == 0:
                 continue
             elif fz_mn_t.mean() < 0:
                 if fz_arr[xi - 1, yj] == 1:
                     fz_arr[xi:, yj] = 1
-                    lags_arr[xi:xi + fzlg, yj] = -1
-                    lags_arr[xi + fzlg:, yj] = 0
+                    lags_arr[xi : xi + fzlg, yj] = -1
+                    lags_arr[xi + fzlg :, yj] = 0
                 else:
-                    lags_arr[xi:xi + fzlg, yj] = -1
-                    lags_arr[xi + fzlg:, yj] = 0
-                    fz_arr[xi + fzlg:, yj] = 1
+                    lags_arr[xi : xi + fzlg, yj] = -1
+                    lags_arr[xi + fzlg :, yj] = 0
+                    fz_arr[xi + fzlg :, yj] = 1
             else:
                 fz_arr[xi:, yj] = fz_arr[xi - 1, yj]
 
@@ -356,39 +385,39 @@ def simulate_ice(airtemp, depth):
             # get year
             Yr = int(dt.dt.year)
             # get winter seasonal mean for year
-            ytmp = airtemp.loc['{0}'.format(Yr)]
-            yssn = ytmp.groupby("time.season").mean('time')
-            Twinter = yssn.loc['DJF'].values[yj]
+            ytmp = airtemp.loc["{0}".format(Yr)]
+            yssn = ytmp.groupby("time.season").mean("time")
+            Twinter = yssn.loc["DJF"].values[yj]
             # calculate thaw lag from Zhao et al. 2022 ice phenology equations
             thwlg = int(-1.003 * Twinter + 21.078)
             # calculate mean temperature over the thaw lag period
-            thw_mn_t = airtemp.values[xi:xi + thwlg, yj]
+            thw_mn_t = airtemp.values[xi : xi + thwlg, yj]
             if thw_mn_t.size == 0:
                 continue
             elif thw_mn_t.mean() >= 0:
                 if fz_arr[xi - 1, yj] == 0:
                     fz_arr[xi:, yj] = 0
-                    lags_arr[xi:xi + thwlg, yj] = 1
-                    lags_arr[xi + thwlg:, yj] = 0
+                    lags_arr[xi : xi + thwlg, yj] = 1
+                    lags_arr[xi + thwlg :, yj] = 0
                 else:
-                    lags_arr[xi:xi + thwlg, yj] = 1
-                    lags_arr[xi + thwlg:, yj] = 0
-                    fz_arr[xi + thwlg:, yj] = 0
+                    lags_arr[xi : xi + thwlg, yj] = 1
+                    lags_arr[xi + thwlg :, yj] = 0
+                    fz_arr[xi + thwlg :, yj] = 0
             else:
                 fz_arr[xi:, yj] = fz_arr[xi - 1, yj]
 
         else:
             continue
 
-    frz_ds = airtemp.to_dataset(name='AirTemp')
+    frz_ds = airtemp.to_dataset(name="AirTemp")
     frz_ds = frz_ds.assign(ice=(("time", "location"), fz_arr))
     frz_ds = frz_ds.assign(lags=(("time", "location"), lags_arr))
-    frz_ds = frz_ds.drop_vars(['AirTemp'])
+    frz_ds = frz_ds.drop_vars(["AirTemp"])
 
     return frz_ds
 
 
 # Default behavior create input datafile from gridmet given static reservoir variables and gridmet POR
-if __name__ == '__main__':
+if __name__ == "__main__":
 
     pass
