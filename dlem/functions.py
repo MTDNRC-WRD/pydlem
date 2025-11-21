@@ -8,6 +8,7 @@ from config import molecularweight
 
 
 # This is verbatum from Zhao et al. 2019, 2022 - 2020 code repo (https://github.com/gzhaowater/lakeEvap)
+# Equation from  Reference: Harrison (1963)
 def latent_heat_vaporization(Ta):
     """
     Function to calculate the latent heat of vaporization variable in Penman Equation.
